@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""
+Plot overlapping key density histograms for multiple SSTable data runs.
+
+Each level gets its own subplot showing the distribution of key density
+for all SSTables in that level, comparing different runs.
+
+Usage:
+  python3 plot_kd_overlap.py <csv_file1> <csv_file2> ...
+"""
+
+import sys
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+import math
+
+def main():
+    # If no arguments, try to find CSVs in current directory or suggest usage
+    if len(sys.argv) < 2:
+        print("Usage: python3 plot_kd_overlap.py <csv_file1> <csv_file2> ...")
+        print("Example: python3 plot_kd_overlap.py ../sstables_csvs/*.csv")
+        sys.exit(1)
+    
+    csv_files = sys.argv[1:]
+    run_data = {}
+    all_levels = set()
+
+    # Load data for each CSV
+    for csv_file in csv_files:
+        path = Path(csv_file)
+        if not path.exists():
+            print(f"Warning: {csv_file} not found. Skipping.")
+            continue
+            
+        try:
+            df = pd.read_csv(csv_file)
+            
+            # Compute key density
+            # Ensure max_key and min_key are treated as numeric
+            df['kd'] = pd.to_numeric(df['max_key']) - pd.to_numeric(df['min_key'])
+            
+            run_name = path.stem.replace('_sstables', '')
+            run_data[run_name] = df
+            all_levels.update(df['level'].unique())
+        except Exception as e:
+            print(f"Error reading {csv_file}: {e}")
+
+    if not run_data:
+        print("No valid data found.")
+        sys.exit(1)
+
+    levels = sorted(list(all_levels))
+    n_levels = len(levels)
+    cols = min(3, n_levels)
+    rows = math.ceil(n_levels / cols)
+    
+    # Increase height if more rows
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 5*rows), squeeze=False)
+    fig.suptitle('Key Density Distribution Comparison by Level', fontsize=16, fontweight='bold', y=0.98)
+    
+    axes_flat = axes.flatten()
+    
+    # Use tab10 colormap for distinct colors
+    colors = plt.cm.tab10.colors 
+    
+    for idx, lvl in enumerate(levels):
+        ax = axes_flat[idx]
+        
+        for color_idx, (run_name, df) in enumerate(run_data.items()):
+            lvl_data = df[df['level'] == lvl]['kd']
+            if lvl_data.empty:
+                continue
+            
+            color = colors[color_idx % len(colors)]
+            
+            # Plot histogram
+            ax.hist(lvl_data, bins=50, edgecolor='black', alpha=0.4, 
+                    color=color, label=f"{run_name}\n(mean:{lvl_data.mean():,.0f}, std:{lvl_data.std():,.0f})")
+            
+            print(f"L{lvl} [{run_name}]: count={len(lvl_data):4d}, mean={lvl_data.mean():>15,.0f}, std={lvl_data.std():>15,.0f}")
+
+        ax.set_xlabel('Key Density (max_key - min_key)', fontsize=10)
+        ax.set_ylabel('Frequency', fontsize=10)
+        ax.set_title(f'Level {lvl}', fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=9, loc='upper right')
+    
+    # Hide empty subplots
+    for idx in range(n_levels, len(axes_flat)):
+        axes_flat[idx].set_visible(False)
+    
+    output_file = "kd_distribution_overlap.png"
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    print(f"\nSaved overlap plot: {output_file}")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+sstables_*
+runs_*
+pruns_*
+results_*
+pruns
+figure
+*.csv
+*.log
+__pycache__/
