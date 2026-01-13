@@ -44,7 +44,7 @@ READ_DB_BENCH_BIN="${READ_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_9.6.1_clean/db
 SST_DB_BENCH_BIN="${SST_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_perf/db_bench}"
 
 READS_FIXED="10000000"
-WARMUP_DURATION="180"
+WARMUP_DURATION="300"
 
 # ===== 명령줄 인자 파싱 =====
 for arg in "$@"; do

@@ -40,7 +40,13 @@ def main():
             # Ensure max_key and min_key are treated as numeric
             df['kd'] = pd.to_numeric(df['max_key']) - pd.to_numeric(df['min_key'])
             
-            run_name = path.stem.replace('_sstables', '')
+            # Shorten run name, e.g., fillrandom_1TB_001
+            parts = path.stem.split('_')
+            if len(parts) >= 6:
+                run_name = f"{parts[2]}_{parts[4]}_{parts[5]}"
+            else:
+                run_name = path.stem.replace('_sstables', '')
+            
             run_data[run_name] = df
             all_levels.update(df['level'].unique())
         except Exception as e:
@@ -76,7 +82,7 @@ def main():
             
             # Plot histogram
             ax.hist(lvl_data, bins=50, edgecolor='black', alpha=0.4, 
-                    color=color, label=f"{run_name}\n(mean:{lvl_data.mean():,.0f}, std:{lvl_data.std():,.0f})")
+                    color=color, label=run_name)
             
             print(f"L{lvl} [{run_name}]: count={len(lvl_data):4d}, mean={lvl_data.mean():>15,.0f}, std={lvl_data.std():>15,.0f}")
 
