@@ -131,14 +131,15 @@ def fit_pareto_params(gaps: np.ndarray) -> Tuple[float, float, float]:
 
 
 def fit_lognorm_params(values: np.ndarray) -> Tuple[float, float, float]:
-    """Fit Log-Normal distribution to values; return (s, loc, scale). Returns (NaN, NaN, NaN) if failed."""
-    # Log-normal requires positive values
+def fit_fisk_params(values: np.ndarray) -> Tuple[float, float, float]:
+    """Fit Fisk (log-logistic) distribution to values; return (c, loc, scale). Returns (NaN, NaN, NaN) if failed."""
+    # Fisk requires positive values
     x_safe = values[values > 0]
     if x_safe.size < 20:
         return (np.nan, np.nan, np.nan)
     try:
         # floc=0 anchors the distribution at zero
-        params = st.lognorm.fit(x_safe, floc=0)
+        params = st.fisk.fit(x_safe, floc=0)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
         return (np.nan, np.nan, np.nan)
@@ -188,8 +189,8 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         kd_max = float(np.nanmax(kd_vals)) if kd_vals.size > 0 else np.nan
         kd_q1, kd_q2, kd_q3 = q1_q2_q3(kd_vals)
 
-        # Log-normal fitting for key density
-        kd_ln_s, kd_ln_loc, kd_ln_scale = fit_lognorm_params(kd_vals)
+        # Fisk (log-logistic) fitting for key density
+        kd_fisk_c, kd_fisk_loc, kd_fisk_scale = fit_fisk_params(kd_vals)
 
         # gaps between consecutive SST ranges
         gaps = level_gaps(sub)
@@ -214,8 +215,8 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         res[f"{prefix}_kd_q1"] = kd_q1
         res[f"{prefix}_kd_q2"] = kd_q2
         res[f"{prefix}_kd_q3"] = kd_q3
-        res[f"{prefix}_kd_lognorm_s"] = kd_ln_s
-        res[f"{prefix}_kd_lognorm_scale"] = kd_ln_scale
+        res[f"{prefix}_kd_fisk_c"] = kd_fisk_c
+        res[f"{prefix}_kd_fisk_scale"] = kd_fisk_scale
         res[f"{prefix}_gap_mean"] = gap_mean
         res[f"{prefix}_gap_std"] = gap_std
         res[f"{prefix}_gap_min"] = gap_min
@@ -256,8 +257,8 @@ def main() -> None:
         "kd_q1",
         "kd_q2",
         "kd_q3",
-        "kd_lognorm_s",
-        "kd_lognorm_scale",
+        "kd_fisk_c",
+        "kd_fisk_scale",
         "gap_mean",
         "gap_std",
         "gap_min",
