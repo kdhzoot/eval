@@ -130,7 +130,6 @@ def fit_pareto_params(gaps: np.ndarray) -> Tuple[float, float, float]:
         return (np.nan, np.nan, np.nan)
 
 
-def fit_lognorm_params(values: np.ndarray) -> Tuple[float, float, float]:
 def fit_fisk_params(values: np.ndarray) -> Tuple[float, float, float]:
     """Fit Fisk (log-logistic) distribution to values; return (c, loc, scale). Returns (NaN, NaN, NaN) if failed."""
     # Fisk requires positive values
@@ -140,6 +139,31 @@ def fit_fisk_params(values: np.ndarray) -> Tuple[float, float, float]:
     try:
         # floc=0 anchors the distribution at zero
         params = st.fisk.fit(x_safe, floc=0)
+        return (float(params[0]), float(params[1]), float(params[2]))
+    except:
+        return (np.nan, np.nan, np.nan)
+
+
+def fit_uniform_params(values: np.ndarray) -> Tuple[float, float, float]:
+    """Fit Uniform distribution; return (NaN, loc, scale). Shape is NaN."""
+    x_safe = values[~np.isnan(values)]
+    if x_safe.size < 1:
+        return (np.nan, np.nan, np.nan)
+    try:
+        loc, scale = st.uniform.fit(x_safe)
+        return (np.nan, float(loc), float(scale))
+    except:
+        return (np.nan, np.nan, np.nan)
+
+
+def fit_lognormal_params(values: np.ndarray) -> Tuple[float, float, float]:
+    """Fit Lognormal distribution; return (s, loc, scale)."""
+    x_safe = values[values > 0]
+    if x_safe.size < 20:
+        return (np.nan, np.nan, np.nan)
+    try:
+        # floc=0 anchors distribution at zero
+        params = st.lognorm.fit(x_safe, floc=0)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
         return (np.nan, np.nan, np.nan)
@@ -171,6 +195,9 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
     levels_present = set(df["level"].unique().tolist())
     res["n_levels"] = len(levels_present)
 
+    # Determine max level for fitting logic
+    max_level = max(levels_present) if levels_present else 0
+
     for lvl in sorted(levels_present):
         sub = df[df["level"] == lvl]
         # Count of SST files (rows) in this level
@@ -189,8 +216,29 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         kd_max = float(np.nanmax(kd_vals)) if kd_vals.size > 0 else np.nan
         kd_q1, kd_q2, kd_q3 = q1_q2_q3(kd_vals)
 
-        # Fisk (log-logistic) fitting for key density
-        kd_fisk_c, kd_fisk_loc, kd_fisk_scale = fit_fisk_params(kd_vals)
+        # Distribution fitting logic
+        kd_model = "none"
+        kd_shape, kd_loc, kd_scale = np.nan, np.nan, np.nan
+
+        if lvl == 1:
+            kd_model = "none"
+        elif lvl == 2:
+            kd_model = "uniform"
+            # Uniform: fit returns (loc, scale) -> shape=NaN
+            _, kd_loc, kd_scale = fit_uniform_params(kd_vals)
+        elif lvl == max_level:
+            # Lognormal for last level
+            kd_model = "lognormal"
+            kd_shape, kd_loc, kd_scale = fit_lognormal_params(kd_vals)
+        elif 2 < lvl < max_level:
+            # Fisk for intermediate levels
+            kd_model = "fisk"
+            kd_shape, kd_loc, kd_scale = fit_fisk_params(kd_vals)
+        else:
+            kd_model = "none"
+        
+        if kd_model != "none":
+            print(f"Fit L{lvl} kd ({kd_model}): shape={kd_shape}, loc={kd_loc}, scale={kd_scale}")
 
         # gaps between consecutive SST ranges
         gaps = level_gaps(sub)
@@ -215,8 +263,10 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         res[f"{prefix}_kd_q1"] = kd_q1
         res[f"{prefix}_kd_q2"] = kd_q2
         res[f"{prefix}_kd_q3"] = kd_q3
-        res[f"{prefix}_kd_fisk_c"] = kd_fisk_c
-        res[f"{prefix}_kd_fisk_scale"] = kd_fisk_scale
+        res[f"{prefix}_kd_model"] = kd_model
+        res[f"{prefix}_kd_shape"] = kd_shape
+        res[f"{prefix}_kd_loc"] = kd_loc
+        res[f"{prefix}_kd_scale"] = kd_scale
         res[f"{prefix}_gap_mean"] = gap_mean
         res[f"{prefix}_gap_std"] = gap_std
         res[f"{prefix}_gap_min"] = gap_min
@@ -257,8 +307,10 @@ def main() -> None:
         "kd_q1",
         "kd_q2",
         "kd_q3",
-        "kd_fisk_c",
-        "kd_fisk_scale",
+        "kd_model",
+        "kd_shape",
+        "kd_loc",
+        "kd_scale",
         "gap_mean",
         "gap_std",
         "gap_min",

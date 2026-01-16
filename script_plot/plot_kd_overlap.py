@@ -73,18 +73,32 @@ def main():
     for idx, lvl in enumerate(levels):
         ax = axes_flat[idx]
         
-        for color_idx, (run_name, df) in enumerate(run_data.items()):
-            lvl_data = df[df['level'] == lvl]['kd']
-            if lvl_data.empty:
+        # Collect data for this level to determine common range
+        lvl_plot_data = []
+        run_names_present = []
+        
+        for run_name, df in run_data.items():
+            kd_data = df[df['level'] == lvl]['kd']
+            if kd_data.empty:
                 continue
+            lvl_plot_data.append(kd_data)
+            run_names_present.append(run_name)
             
+        if not lvl_plot_data:
+            continue
+            
+        # Global range for this subplot
+        all_vals = pd.concat(lvl_plot_data)
+        g_min, g_max = all_vals.min(), all_vals.max()
+        
+        for color_idx, (kd_data, run_name) in enumerate(zip(lvl_plot_data, run_names_present)):
             color = colors[color_idx % len(colors)]
             
-            # Plot histogram
-            ax.hist(lvl_data, bins=50, edgecolor='black', alpha=0.4, 
+            # Plot histogram with shared range ensuring identical binning width
+            ax.hist(kd_data, bins=50, range=(g_min, g_max), edgecolor='black', alpha=0.4, 
                     color=color, label=run_name)
             
-            print(f"L{lvl} [{run_name}]: count={len(lvl_data):4d}, mean={lvl_data.mean():>15,.0f}, std={lvl_data.std():>15,.0f}")
+            print(f"L{lvl} [{run_name}]: count={len(kd_data):4d}, mean={kd_data.mean():>15,.0f}, std={kd_data.std():>15,.0f}")
 
         ax.set_xlabel('Key Density (max_key - min_key)', fontsize=10)
         ax.set_ylabel('Frequency', fontsize=10)
