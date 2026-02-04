@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Plot per-level SST coverage for a directory of RocksDB SST metadata CSVs.
+"""
+SSTable 레벨별 Key-space Coverage 분석 및 시각화 도구.
 
-This script scans all `run_*_entries.csv` files in the current directory,
-computes the total key-space coverage contributed by non-overlapping SST file
-ranges within each level, and renders them on a single plot for comparison.
+이 스크립트는 RocksDB SSTable 메타데이터 CSV 파일들을 분석하여 다음을 수행합니다:
+1. 각 레벨 내의 SSTable들이 차지하는 Key 범위(min_key ~ max_key)를 분석하여 중복을 제외한 전체 커버리지를 계산합니다.
+2. 파일명(예: _700GB_)에서 데이터 크기를 추출하여 전체 Key-space 대비 커버리지 비율(%)을 산출합니다.
+3. 확률 모델을 기반으로 조회 시 예상되는 블록 읽기 수(Filter, Index, Data Blocks)를 추정합니다.
 
-Usage:
-    python plot_level_coverage.py [--key-space 280000000] [--pattern 'run_*_entries.csv']
-
-Outputs:
-    - Displays the plot interactively (if a display is available)
-    - Saves the figure as `level_coverage.png` alongside this script
+주요 산출물:
+- level_coverage.png: 레벨별 커버리지 변화 그래프
+- level_coverage_summary.csv: 실행(run)별 요약 통계
+- level_coverage_details.csv: 레벨별 상세 분석 데이터
 """
 
 from __future__ import annotations
@@ -343,6 +343,9 @@ def write_summary_csv(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot per-level SST coverage for CSV runs.")
     parser.add_argument(
+        "csv_dir", help="Directory containing SSTable CSV files."
+    )
+    parser.add_argument(
         "--key-space", type=int, default=DEFAULT_KEY_SPACE,
         help=f"Total key space size (default: {DEFAULT_KEY_SPACE:,})."
     )
@@ -369,17 +372,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    base_dir = Path(__file__).resolve().parent
-    csv_files = sorted(Path(base_dir).glob(args.pattern))
+    csv_dir = Path(args.csv_dir)
+    if not csv_dir.is_dir():
+        print(f"[ERROR] '{args.csv_dir}' is not a directory.")
+        return 1
+
+    csv_files = sorted(csv_dir.glob(args.pattern))
 
     if not csv_files:
-        print(f"[ERROR] No CSV files matched pattern '{args.pattern}' in {base_dir}")
+        print(f"[ERROR] No CSV files matched pattern '{args.pattern}' in {csv_dir}")
         return 1
 
     data = collect_coverages(csv_files, args.key_space)
-    output_path = base_dir / args.output
-    csv_output_path = base_dir / args.csv_output
-    detail_output_path = base_dir / args.detail_csv_output
+    # Output paths follow the script location or current directory depending on preference,
+    # but let's keep it near the script or in current dir?
+    # Original code: base_dir = Path(__file__).resolve().parent; output_path = base_dir / args.output
+    # Let's keep outputs in the current working directory to avoid polluting script folder
+    output_path = Path(args.output)
+    csv_output_path = Path(args.csv_output)
+    detail_output_path = Path(args.detail_csv_output)
+    
     plot_coverages(data, output_path)
     write_summary_csv(data, csv_output_path, detail_output_path)
     return 0

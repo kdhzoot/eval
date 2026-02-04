@@ -37,9 +37,9 @@ DB_ROOT=""
 SEED_TYPE=""
 FILL_SEED_BASE="1722070161"
 
-FILL_DB_BENCH_BIN="${FILL_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_9.6.1_clean/db_bench}"
+FILL_DB_BENCH_BIN="${FILL_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_clean/db_bench}"
 # Binary used for readrandom warmup (can be same binary)
-READ_DB_BENCH_BIN="${READ_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_9.6.1_clean/db_bench}"
+READ_DB_BENCH_BIN="${READ_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_clean/db_bench}"
 # Binary used specifically for sstables benchmark (default to S3-LOAD/db_bench if present)
 SST_DB_BENCH_BIN="${SST_DB_BENCH_BIN:-/home/smrc/TTLoad/rocksdb_perf/db_bench}"
 
@@ -116,7 +116,7 @@ fi
 
 # ===== 출력 디렉토리 자동 생성 =====
 TS="$(date +%Y%m%d_%H%M%S)"
-OUT_ROOT="/home/smrc/TTLoad/eval/runs_${WORKLOAD}_${DB_SIZES}_${ITER}iter_${SEED_TYPE}_${TS}"
+OUT_ROOT="/home/smrc/TTLoad/eval/runs/runs_${WORKLOAD}_${DB_SIZES}_${ITER}iter_${SEED_TYPE}_${TS}"
 
 # ===== 유틸 =====
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*"; }

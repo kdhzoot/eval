@@ -131,7 +131,7 @@ if [[ -z "$OUT_ROOT" ]]; then
   TS="$(date +%Y%m%d_%H%M%S)"
   # DB_ROOT에서 마지막 디렉토리 이름 추출
   DB_BASENAME="$(basename "$DB_ROOT")"
-  OUT_ROOT="/home/smrc/TTLoad/eval/runs_${WORKLOAD}_${DB_BASENAME}_${TS}"
+  OUT_ROOT="/home/smrc/TTLoad/eval/runs/runs_${WORKLOAD}_${DB_BASENAME}_${TS}"
 fi
 
 # ===== 유틸 =====
@@ -255,6 +255,7 @@ run_and_save() {
   fi
 }
 
+  #--seed=1724572420 \
 # ===== 측정 커맨드 구성 =====
 mk_measure_cmd() {
   local db="$1" cache_bytes="$2" num="$3"
@@ -273,7 +274,7 @@ $READ_DB_BENCH_BIN \
   --use_direct_io_for_flush_and_compaction=true \
   --use_direct_reads=true \
   --bytes_per_sync=0 \
-  --seed=1724572420 \
+  --seed=1724 \
   --bloom_bits=10 \
   --statistics=1 \
   --cache_index_and_filter_blocks=true \
@@ -315,7 +316,7 @@ $READ_DB_BENCH_BIN \
   --use_direct_io_for_flush_and_compaction=true \
   --use_direct_reads=true \
   --bytes_per_sync=0 \
-  --seed=1724572420 \
+  --seed=1724 \
   --bloom_bits=10 \
   --statistics=1 \
   --cache_index_and_filter_blocks=true \

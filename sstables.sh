@@ -61,7 +61,7 @@ fi
 # ===== 출력 디렉토리 자동 생성 (미지정시) =====
 if [[ -z "$OUT_ROOT" ]]; then
   DB_ROOT_NAME="$(basename "$DB_ROOT")"
-  OUT_ROOT="/home/smrc/TTLoad/eval/sstables_${DB_ROOT_NAME}"
+  OUT_ROOT="/home/smrc/TTLoad/eval/sstables/sstables_${DB_ROOT_NAME}"
 
   # Avoid clobbering an existing run directory without relying on timestamps.
   if [[ -e "$OUT_ROOT" ]]; then

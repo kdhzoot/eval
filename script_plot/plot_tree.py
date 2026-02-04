@@ -8,8 +8,8 @@ plt.rcParams.update({
     "font.size": 24,        # 기본 글자 크기
     "axes.titlesize": 24,   # 타이틀 크기
     "axes.labelsize": 24,   # 축 레이블 크기
-    "xtick.labelsize": 14,  # x축 눈금 크기
-    "ytick.labelsize": 14,  # y축 눈금 크기
+    "xtick.labelsize": 20,  # x축 눈금 크기
+    "ytick.labelsize": 20,  # y축 눈금 크기
     "legend.fontsize": 14   # 범례 글자 크기
 })
 
@@ -139,10 +139,33 @@ def compute_key_density_stats(groups):
 def plot_key_span_broken_barh(groups, output_file: str):
     """
     broken_barh를 사용하여 각 SST의 (min_key, max_key) 범위를
-    레벨별로 색상 블록으로 시각화
+    레벨별로 색상 블록으로 시각화.
+    x축은 보기용으로 0~10000 범위로 정규화하여 표시.
     """
-    plt.figure(figsize=(12, 4))
-    height = 0.1  # 각 bar 높이
+    # 전체 키 범위 계산 (정규화용)
+    global_min = None
+    global_max = None
+    for entries in groups.values():
+        for entry in entries:
+            min_key = entry["min_key"]
+            max_key = entry["max_key"]
+            if isinstance(min_key, int) and isinstance(max_key, int):
+                if global_min is None or min_key < global_min:
+                    global_min = min_key
+                if global_max is None or max_key > global_max:
+                    global_max = max_key
+
+    if global_min is None or global_max is None or global_max <= global_min:
+        key_range = 1.0
+        global_min = 0
+    else:
+        key_range = float(global_max - global_min)
+
+    def norm(x):
+        return 10000.0 * (x - global_min) / key_range
+
+    plt.figure(figsize=(16, 6))
+    height = 0.5  # 각 bar 높이 (한 눈에 보이도록 키움)
 
     for level_str in sorted(groups.keys(), key=lambda x: int(x)):
         entries = groups[level_str]
@@ -160,22 +183,25 @@ def plot_key_span_broken_barh(groups, output_file: str):
                 if key_span <= 0:
                     continue  # 무효한 구간
 
+                x_norm = norm(min_key)
+                span_norm = norm(max_key) - x_norm
+                if span_norm <= 0:
+                    continue
                 plt.broken_barh(
-                    [(min_key, key_span)],
+                    [(x_norm, span_norm)],
                     (level - height / 2, height),
                     facecolors='steelblue',
-                    edgecolors='black',
+                    edgecolors='#3d3b3b',
                     alpha=0.9
                 )
 
-    plt.xlabel("Key Space (as integer)", labelpad=20)
-    plt.ylabel("SST Level", labelpad=20)
-    plt.title("SST Key Range per Level (Bar View)", pad=25)
-
-    # plt.tick_params(axis='x', pad=10)
-    # plt.tick_params(axis='y', pad=10)
+    plt.xlabel("Key space", labelpad=20)
+    plt.ylabel("Level", labelpad=20)
+    plt.title("Key Range Covered by SST", pad=25)
 
     plt.grid(True, axis='x', linestyle='--', alpha=0.5)
+    plt.xlim(0, 10000)
+    plt.xticks([0, 2000, 4000, 6000, 8000, 10000])
     plt.yticks(sorted([int(k) for k in groups.keys() if groups[k]]))
     plt.tight_layout()
     plt.gca().invert_yaxis()

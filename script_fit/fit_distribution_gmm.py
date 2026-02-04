@@ -1,31 +1,11 @@
-#!/usr/bin/env python3
-"""
-SSTable 데이터 분포 분석 및 최적 분포 피팅 도구.
-SSTable 사이의 Gap, Key Density, Entry Count 데이터를 분석하여 최적의 통계 분포 모델을 제안합니다.
-
-사용법:
-  # 1. SSTable 사이의 Gap 분석 (기본값)
-  python3 fit_distribution.py <csv_dir> --target gap
-
-  # 2. Key Density 분석
-  python3 fit_distribution.py <csv_dir> --target kd
-
-  # 3. Entry Count 분석 (Spike/Tail 분리 분석 모드 활성)
-  python3 fit_distribution.py <csv_dir> --target entry
-
-주요 옵션:
-  --target {gap, kd, entry} : 분석 대상 선택
-  --pattern "*.csv"         : 파일 패턴 지정
-  --output "result.csv"     : 결과 저장 파일명 지정
-"""
-
 import argparse
 import logging
 import numpy as np
 import pandas as pd
 import scipy.stats as st
 from pathlib import Path
-from scipy.stats import kstest
+from scipy.stats import kstest, norm
+from sklearn.mixture import GaussianMixture
 from typing import Dict, Any, List, Tuple, Optional
 import warnings
 
@@ -205,31 +185,46 @@ def fit_best_distribution_mle(x: np.ndarray, top_k: int = 1) -> List[Dict[str, A
     ]    
     results = []
     
+    # 1. Scipy Distributions Fitting
     for dist_name in candidate_dists:
         try:
             dist = getattr(st, dist_name)
-            
-            # 1. Fit (MLE: 최대우도추정)
             params = dist.fit(x_safe, floc=0)
-            
-            # 2. BIC 계산 (모델 선택 기준)
             log_lik = np.sum(dist.logpdf(x_safe, *params))
             if not np.isfinite(log_lik): continue
-            bic =  - 2 * log_lik
-
-            # 3. K-S Test (참고용 통계)
+            bic = -2 * log_lik + len(params) * np.log(len(x_safe))
             D_stat, p_value = kstest(x_safe, dist_name, args=params)
-            
-            # 4. Score 계산 (0~100점) - 직관적 지표
             score = calculate_fitting_score(x_safe, dist_name, params)
+            results.append({
+                "dist": dist_name, "bic": bic, "params": params,
+                "ks_stat": D_stat, "ks_p": p_value, "score": score
+            })
+        except: continue
+
+    # 2. GMM (Gaussian Mixture Model) Fitting
+    for n_comp in [2, 3]:
+        try:
+            x_reshaped = x_safe.reshape(-1, 1)
+            gmm = GaussianMixture(n_components=n_comp, random_state=42)
+            gmm.fit(x_reshaped)
+            bic = gmm.bic(x_reshaped)
+            
+            # GMM CDF for Score Calculation
+            x_sorted = np.sort(x_safe)
+            y_empirical = np.arange(1, len(x_safe) + 1) / len(x_safe)
+            y_theoretical = np.zeros_like(x_sorted)
+            for w, m, v in zip(gmm.weights_, gmm.means_.flatten(), gmm.covariances_.flatten()):
+                y_theoretical += w * norm.cdf(x_sorted, loc=m, scale=np.sqrt(v))
+            
+            ss_res = np.sum((y_empirical - y_theoretical) ** 2)
+            ss_tot = np.sum((y_empirical - np.mean(y_empirical)) ** 2)
+            score = max(1 - (ss_res / ss_tot), 0.0) * 100.0 if ss_tot > 0 else 0.0
 
             results.append({
-                "dist": dist_name, 
-                "bic": bic, 
-                "params": params,
-                "ks_stat": D_stat,
-                "ks_p": p_value,
-                "score": score
+                "dist": f"gmm_{n_comp}",
+                "bic": bic,
+                "params": (gmm.weights_.tolist(), gmm.means_.flatten().tolist(), np.sqrt(gmm.covariances_.flatten()).tolist()),
+                "ks_stat": np.nan, "ks_p": np.nan, "score": score
             })
         except: continue
 
@@ -242,59 +237,36 @@ def fit_best_distribution_mle(x: np.ndarray, top_k: int = 1) -> List[Dict[str, A
 # 4. 실행 및 요약 리포트
 # -----------------------------------------------------------------------------
 
-def run_analysis(df: pd.DataFrame, target_mode: str, top_k: int = 3) -> pd.DataFrame:
+def run_analysis(df: pd.DataFrame, top_k: int = 3) -> pd.DataFrame:
     summary_rows = []
     
     # DB별, Level별로 그룹화하여 분석 수행
     for (db, lvl), group_df in df.groupby(["db", "level"], sort=True):
-        x_all = group_df["value"].to_numpy(dtype=float)
-        row = {"db": db, "level": int(lvl), "sample_count": len(x_all)}
+        x = group_df["value"].to_numpy(dtype=float)
+        row = {"db": db, "level": int(lvl), "sample_count": len(x)}
 
-        if len(x_all) < 10:
+        if len(x) < 30:
             summary_rows.append(row)
             continue
-        
-        # [Entry Mode 특화: Spike/Tail 분리 분석]
-        if target_mode == "entry":
-            # 최빈값(Mode) 근처에서 일정 너비(window_width) 내에 가장 많은 데이터가 있는 구간 탐색
-            window_width = 1000 
-            x_sorted = np.sort(x_all)
-            total_count = len(x_all)
-            
-            max_count = 0
-            best_lower = x_sorted[0]
-            right = 0
-            for left in range(total_count):
-                while right < total_count and x_sorted[right] <= x_sorted[left] + window_width:
-                    right += 1
-                if (right - left) > max_count:
-                    max_count = right - left
-                    best_lower = x_sorted[left]
-            
-            lower_bound, upper_bound = best_lower, best_lower + window_width
-            mask_spike = (x_all >= lower_bound) & (x_all <= upper_bound)
-            spike_count = np.sum(mask_spike)
-            
-            row["spike_min"] = round(float(lower_bound), 2)
-            row["spike_max"] = round(float(upper_bound), 2)
-            row["spike_ratio"] = round(spike_count / total_count, 4)
-            row["spike_ref"] = round(float((lower_bound + upper_bound) / 2), 2)
-            
-            # Tail 데이터(나머지)에 대해서만 분포 피팅 수행
-            x_to_fit = x_all[~mask_spike]
-            row["tail_count"] = len(x_to_fit)
-        else:
-            x_to_fit = x_all
 
         # 피팅 수행
-        if len(x_to_fit) >= 20:
-            mle_results = fit_best_distribution_mle(x_to_fit, top_k=top_k)
-            for i, res in enumerate(mle_results):
-                prefix = f"top_{i+1}"
-                row[prefix] = res["dist"]
-                row[f"{prefix}_bic"] = round(res["bic"], 2)
-                row[f"{prefix}_params"] = str(tuple(round(p, 6) for p in res["params"]))
-                row[f"{prefix}_score"] = round(res["score"], 2)
+        mle_results = fit_best_distribution_mle(x, top_k=top_k)
+        
+        for i, res in enumerate(mle_results):
+            prefix = f"top_{i+1}"
+            row[prefix] = res["dist"]
+            row[f"{prefix}_bic"] = round(res["bic"], 2)
+            
+            # 파라미터 저장 (GMM과 일반 분포 구분 처리)
+            params = res["params"]
+            if "gmm" in res["dist"]:
+                # Gmm params: (weights, means, stds)
+                row[f"{prefix}_params"] = str(params)
+            else:
+                row[f"{prefix}_params"] = str(tuple(round(float(p), 6) for p in params))
+            
+            # [Score 저장] 소수점 2자리까지
+            row[f"{prefix}_score"] = round(res["score"], 2)
 
         summary_rows.append(row)
 
@@ -303,20 +275,16 @@ def run_analysis(df: pd.DataFrame, target_mode: str, top_k: int = 3) -> pd.DataF
 
 def print_distribution_stats(df: pd.DataFrame, target_mode: str):
     """분석 결과 요약 출력"""
-    if target_mode == "entry" and "spike_ratio" in df.columns:
-        avg_spike_ratio = df["spike_ratio"].mean()
-        print("\n" + "="*60)
-        print(f"  📌  [{target_mode.upper()}] Spike Range Analysis (Concentration)")
-        print(f"  • Average Spike Ratio: {avg_spike_ratio*100:.1f}%")
-        print("  (데이터의 상당수가 특정 구간(예: 64K)에 집중되어 있음)")
-        print("="*60)
-
     if "top_1" not in df.columns: return
     valid_df = df.dropna(subset=["top_1"])
     total = len(valid_df)
     if total == 0: return
 
-    print(f"\n[🎯 Best Model Counts for {'Tail Data' if target_mode=='entry' else 'Data'}]")
+    print("\n" + "="*60)
+    print(f"  📊  [{target_mode.upper()}] Best Distribution Summary (Total: {total})")
+    print("="*60)
+
+    print("\n[🎯 Best Model Counts]")
     for name, count in valid_df["top_1"].value_counts().items():
         print(f"  • {name:<15} : {(count/total)*100:5.1f}%  ({count} cases)")
 
@@ -331,7 +299,9 @@ def print_distribution_stats(df: pd.DataFrame, target_mode: str):
         print(f"  • Average Score    : {avg_score:.2f}점")
         print(f"  • Excellent (90+)  : {high_score_ratio:.1f}%")
         print(f"  • Good (70~90)     : {mid_score_ratio:.1f}%")
-        print("="*60 + "\n")
+        print(f"    (점수가 높을수록 모델이 실제 데이터 분포를 완벽하게 설명함)")
+
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
@@ -353,7 +323,7 @@ if __name__ == "__main__":
         
         # 2. Run Analysis
         logger.info(f"[{args.target.upper()}] Calculating Best Fit & Scores...")
-        summary = run_analysis(df_data, args.target)
+        summary = run_analysis(df_data)
         
         # 3. Save & Print
         summary.to_csv(args.output, index=False)

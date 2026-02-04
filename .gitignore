@@ -1,8 +1,10 @@
-sstables_*
-runs_*
-pruns_*
+sstables
+sstables_prev
+runs_prev
+runs
 results_*
-pruns
 *.csv
 *.log
+*.png
+figure*
 __pycache__/

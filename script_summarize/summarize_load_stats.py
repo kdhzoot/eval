@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
-"""Summarize fillrandom loading stats across run_* folders.
+# -*- coding: utf-8 -*-
+"""
+Summarize fillrandom loading stats across run_* folders.
 
-Scans a runs directory like:
-  runs_fillrandom_.../run_100GB_001_.../fillrandom/
+Scans a runs directory (e.g., runs_fillrandom_...) and extracts performance metrics 
+for each run, including load time (db_bench), CPU usage (/proc/stat), and Disk I/O (/proc/diskstats).
 
-For each run, extracts:
-- Load time from RocksDB db_bench output (fillrandom line)
-- CPU usage deltas from /proc/stat snapshots (stat_BEFORE.txt / stat_AFTER.txt)
-- Disk I/O deltas from /proc/diskstats snapshots (diskstats_BEFORE.txt / diskstats_AFTER.txt)
+Input:
+    - A directory containing run_* subfolders, each with a 'fillrandom' directory 
+      containing stdout.log, stat_BEFORE/AFTER.txt, and diskstats_BEFORE/AFTER.txt.
 
-Outputs one CSV row per run.
+Output:
+    - A single CSV file with one row per run, containing timing, CPU, and Disk metrics.
 
-Example:
-  python summarize_load_stats.py \
-    --runs-dir /home/smrc/TTLoad/eval/runs_fillrandom_100to500GB_10iter_same_20251226_101831
-
-Optional:
-  --disk-device md0
-  --disk-device-regex '^(md0|dm-0)$'
+Usage:
+    python summarize_load_stats.py --runs-dir <path_to_runs_dir> [-o <out.csv>]
 """
 
 from __future__ import annotations
