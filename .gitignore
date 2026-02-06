@@ -6,5 +6,5 @@ results_*
 *.csv
 *.log
 *.png
-figure*
+figures/
 __pycache__/
