@@ -59,6 +59,22 @@ def auto_trim_upper_iqr(values: pd.Series, iqr_mult: float) -> pd.Series:
     return v[v <= upper]
 
 def main():
+    # --- Plot Style Configuration ---
+    STYLE = {
+        'fonts': ['Calibri', 'Liberation Sans', 'Arial', 'Ubuntu'],
+        'fs_label': 22,        # Font size for axis labels
+        'fs_title': 24,        # Font size for subplot titles
+        'fs_tick': 18,         # Font size for axis ticks
+        'fs_legend': 14,       # Font size for legend
+        'label_pad': 10,       # Padding for axis labels
+        'hspace': 0.4,         # Height space between subplots
+        'wspace': 0.3,         # Width space between subplots
+        'fig_width': 18,       # Figure width
+        'fig_height_per_row': 5, # Figure height per row
+        'highlight_color': '#D35400', # Color for highlighted data
+        'grid_color': '#e0e0e0',      # Color for grid lines
+    }
+
     parser = argparse.ArgumentParser(description="Integrated plot script for SSTable distributions.")
     parser.add_argument("csv_files", nargs="+", help="SSTable CSV files")
     parser.add_argument("--metric", choices=["kd", "entry", "gap"], default="kd", 
@@ -111,18 +127,17 @@ def main():
     cols = min(3, n_levels) if n_levels > 0 else 1
     rows = math.ceil(n_levels / cols) if n_levels > 0 else 1
     
-    # 폰트 설정 (plot_summary 규격 반영)
+    # Font setup
     available_fonts = [f.name for f in matplotlib.font_manager.fontManager.ttflist]
     target_font = 'sans-serif'
-    for candidate in ['Calibri', 'Liberation Sans', 'Arial', 'Ubuntu']:
+    for candidate in STYLE['fonts']:
         if candidate in available_fonts:
             target_font = candidate
             break
     plt.rcParams['font.family'] = target_font
 
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 5*rows), squeeze=False)
-    # 여백 조절 (plot_summary 규격 반영)
-    fig.subplots_adjust(hspace=0.4, wspace=0.3)
+    fig, axes = plt.subplots(rows, cols, figsize=(STYLE['fig_width'], STYLE['fig_height_per_row'] * rows), squeeze=False)
+    fig.subplots_adjust(hspace=STYLE['hspace'], wspace=STYLE['wspace'])
     
     title_map = {
         "kd": "Key Density Distribution Comparison by Level",
@@ -151,7 +166,7 @@ def main():
     for idx, lvl in enumerate(levels):
         ax = axes_flat[idx]
         ax.set_facecolor('#ffffff')
-        ax.grid(True, axis='y', linestyle='--', color='#e0e0e0', zorder=0)
+        ax.grid(True, axis='y', linestyle='--', color=STYLE['grid_color'], zorder=0)
 
         lvl_plot_data = []
         run_names_present = []
@@ -198,7 +213,7 @@ def main():
                 alpha = 0.8
                 edge_color = 'black'
                 zorder = 5
-                current_color = '#D35400' # 강조 색상 (찐한 주황)
+                current_color = STYLE['highlight_color'] # 강조 색상
             else:
                 alpha = 0.3
                 edge_color = 'none'  # 배경 데이터는 외곽선 제거하여 부드럽게
@@ -210,16 +225,16 @@ def main():
             ax.hist(p_data, bins=50, range=(g_min, g_max), edgecolor=edge_color, 
                     alpha=alpha, color=current_color, label=current_label, zorder=zorder)
             
-            print(f"L{lvl} [{run_name}]: count={len(p_data):4d}, mean={p_data.mean():>15,.1f}")
+        print(f"L{lvl} [{run_name}]: count={len(p_data):4d}, mean={p_data.mean():>15,.1f}")
 
-        # 축 제목 및 설정 (plot_summary 규격 반영)
+        # Axis labeling with style config
         ax.set_xlabel(f"log10({xlabel_map[args.metric]} + 1)" if args.xlog else xlabel_map[args.metric], 
-                      fontsize=22, labelpad=10)
-        ax.set_ylabel('Count', fontsize=22, labelpad=10)
-        ax.set_title(f'Level {lvl}', fontsize=24, fontweight='bold')
+                      fontsize=STYLE['fs_label'], labelpad=STYLE['label_pad'])
+        ax.set_ylabel('Count', fontsize=STYLE['fs_label'], labelpad=STYLE['label_pad'])
+        ax.set_title(f'Level {lvl}', fontsize=STYLE['fs_title'], fontweight='bold')
         
-        # 눈금 폰트 사이즈 (18pt)
-        ax.tick_params(axis='both', labelsize=18)
+        # Tick parameters
+        ax.tick_params(axis='both', labelsize=STYLE['fs_tick'])
         
         # entry 메트릭일 경우 x축 눈금을 64k 하나로 고정
         if args.metric == "entry":
@@ -232,8 +247,8 @@ def main():
         curr_ylim = ax.get_ylim()
         ax.set_ylim(0, curr_ylim[1] * 1.2)
         
-        # 범례 설정 (handle 크기 규격 반영)
-        ax.legend(fontsize=14, loc='upper right', handlelength=1.0, handleheight=1.0)
+        # Legend configuration
+        ax.legend(fontsize=STYLE['fs_legend'], loc='upper right', handlelength=1.0, handleheight=1.0)
     
     for idx in range(n_levels, len(axes_flat)):
         axes_flat[idx].set_visible(False)

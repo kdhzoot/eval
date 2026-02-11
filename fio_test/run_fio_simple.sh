@@ -1,138 +1,131 @@
 #!/bin/bash
 set -euo pipefail
 
-# Simple FIO Test for Sequential Read/Write Bandwidth
-# Measures maximum sequential read and write throughput on /dev/md0 or filesystem
+# ==============================================================================
+# FIO Performance Test Script
+# Measures sequential read/write bandwidth and latency.
+# Supports both Filesystem (fs) and Raw Block Device (raw) modes.
+# ==============================================================================
 
+# --- Configuration (Override via Environment Variables) ---
 TEST_DIR="${TEST_DIR:-/work}"
-TEST_FILE="${TEST_FILE:-$TEST_DIR/fio_test_file}"
 RAW_DEVICE="${RAW_DEVICE:-/dev/md0}"
 RESULTS_DIR="${RESULTS_DIR:-./results_$(date +%Y%m%d_%H%M%S)}"
 
-# Tuning knobs (override via env)
-MODE="${MODE:-fs}"                 # fs or raw
+MODE="${MODE:-fs}"                 # 'fs' (filesystem) or 'raw' (block device)
 BLOCKSIZE="${BLOCKSIZE:-1M}"
 IODEPTH="${IODEPTH:-128}"
-NUMJOBS="${NUMJOBS:-300}"
-SIZE="${SIZE:-10GB}"              # total IO size per job (fio semantics)
-MODE_MIXED="${MODE_MIXED:-0}"      # 1 to run mixed rw test
-RWMIXREAD="${RWMIXREAD:-30}"       # read percentage in mixed rw
+NUMJOBS="${NUMJOBS:-48}"           # Reduced jobs to decrease contention
+SIZE="${SIZE:-10GB}"              # Size per job
+MODE_MIXED="${MODE_MIXED:-0}"      # 1 to run mixed RW test
+RWMIXREAD="${RWMIXREAD:-30}"       # Read percentage for mixed test
 
-if [ "$MODE" = "raw" ]; then
-    TARGET="$RAW_DEVICE"
-else
-    TARGET="$TEST_FILE"
-fi
-SIZE_ARG="--size=$SIZE"
-
+# --- Setup & Target Selection ---
 mkdir -p "$RESULTS_DIR"
 
-echo "=========================================="
-echo "FIO Sequential Read/Write Bandwidth Test"
-echo "=========================================="
-echo "Device: $RAW_DEVICE (mounted at $TEST_DIR)"
-echo "Mode: $MODE"
-echo "Target: $TARGET"
 if [ "$MODE" = "raw" ]; then
-    echo "WARNING: raw mode writes directly to the block device and destroys data."
+    # Support multiple raw devices if provided as space-separated string
+    # fio uses ':' as a separator for multiple filenames
+    FILENAME_LIST=$(echo "$RAW_DEVICE" | tr ' ' ':')
+    # For raw mode, we use --filename instead of --directory
+    TARGET_ARGS="--filename=$FILENAME_LIST"
+    TARGET_DESC="Raw Devices ($RAW_DEVICE)"
+    echo "WARNING: Raw mode will overwrite data on $RAW_DEVICE"
+else
+    # Filesystem mode: Use a sub-directory and multiple files to avoid inode contention
+    TARGET_DIR="$TEST_DIR/fio_files"
+    mkdir -p "$TARGET_DIR"
+    TARGET_ARGS="--directory=$TARGET_DIR --nrfiles=$NUMJOBS --file_service_type=roundrobin"
+    TARGET_DESC="Directory ($TARGET_DIR)"
 fi
-echo "Blocksize: $BLOCKSIZE, iodepth: $IODEPTH, numjobs: $NUMJOBS, size: $SIZE"
-echo "Mixed rw: $MODE_MIXED (rwmixread=$RWMIXREAD)"
-echo "Results saved to: $RESULTS_DIR"
-echo ""
 
-# Ensure directory exists in fs mode
-if [ "$MODE" = "fs" ]; then
-    mkdir -p "$TEST_DIR"
-fi
+# --- Helper Functions ---
 
-# ------------------------------------------------------------
-# [1/2] Sequential WRITE first (precondition + create same file)
-# ------------------------------------------------------------
-echo "[1/2] Running Sequential Write Test (precondition)..."
+log_header() {
+    echo "=========================================="
+    echo "$1"
+    echo "=========================================="
+}
 
-fio \
-    --name=sequential_write \
-    --filename="$TARGET" \
-    $SIZE_ARG \
-    --blocksize="$BLOCKSIZE" \
-    --ioengine=libaio \
-    --iodepth="$IODEPTH" \
-    --numjobs="$NUMJOBS" \
-    --rw=write \
-    --direct=1 \
-    --group_reporting \
-    --output-format=json > "$RESULTS_DIR/seq_write.json" 2>&1
+run_fio() {
+    local job_name="$1"
+    local rw_type="$2"
+    local extra_args="${3:-}"
 
-echo ""
+    # Use a fixed name for the data layout to ensure file reuse across read/mixed tests
+    local layout_name="fio_data_layout"
 
-# # ------------------------------------------------------------
-# # [2/2] Sequential READ on the same target
-# # ------------------------------------------------------------
-echo "[2/2] Running Sequential Read Test (same target)..."
-
-fio \
-    --name=sequential_read \
-    --filename="$TARGET" \
-    $SIZE_ARG \
-    --blocksize="$BLOCKSIZE" \
-    --ioengine=libaio \
-    --iodepth="$IODEPTH" \
-    --numjobs="$NUMJOBS" \
-    --rw=read \
-    --direct=1 \
-    --group_reporting \
-    --output-format=json > "$RESULTS_DIR/seq_read.json" 2>&1
-
-echo ""
-
-# ------------------------------------------------------------
-# Optional: Mixed RW test (concurrent read+write)
-# ------------------------------------------------------------
-if [ "$MODE_MIXED" = "1" ]; then
-    echo "[optional] Running Mixed RW Test (rw, rwmixread=$RWMIXREAD)..."
+    echo ">>> Running $job_name ($rw_type)..."
     fio \
-        --name=mixed_rw \
-        --filename="$TARGET" \
-        $SIZE_ARG \
+        --name="$layout_name" \
+        $TARGET_ARGS \
+        --size="$SIZE" \
         --blocksize="$BLOCKSIZE" \
         --ioengine=libaio \
         --iodepth="$IODEPTH" \
         --numjobs="$NUMJOBS" \
-        --rw=rw \
-        --rwmixread="$RWMIXREAD" \
+        --rw="$rw_type" \
         --direct=1 \
         --group_reporting \
-        --output-format=json > "$RESULTS_DIR/mixed_rw.json" 2>&1
-    echo ""
+        --output-format=json $extra_args > "$RESULTS_DIR/$job_name.json" 2>&1
+}
+
+parse_results() {
+    local job_name="$1"
+    local op_type="$2" # "read" or "write" or "mixed"
+    local json_file="$RESULTS_DIR/$job_name.json"
+
+    if [ "$op_type" = "mixed" ]; then
+        jq -r '.jobs[0] | "  READ  Throughput: \(.read.bw_mean/1024/1024 | .*100 | round / 100) GB/s  IOPS: \(.read.iops_mean | round)\n  WRITE Throughput: \(.write.bw_mean/1024/1024 | .*100 | round / 100) GB/s  IOPS: \(.write.iops_mean | round)"' "$json_file"
+    else
+        jq -r ".jobs[0].$op_type | \"  Throughput: \(.bw_mean/1024/1024 | .*100 | round / 100) GB/s\n  IOPS: \(.iops_mean | round)\n  Latency: \(.lat_ns.mean/1000 | round) μs\"" "$json_file"
+    fi
+}
+
+# --- Execution ---
+
+log_header "FIO Sequential Performance Test"
+echo "Mode:     $MODE"
+echo "Target:   $TARGET_DESC"
+echo "Jobs:     $NUMJOBS (QD=$IODEPTH, BS=$BLOCKSIZE)"
+echo "Size:     $SIZE per job"
+echo "Results:  $RESULTS_DIR"
+echo ""
+
+# 1. Sequential Write
+run_fio "seq_write" "write"
+
+# 2. Sequential Read
+run_fio "seq_read" "read"
+
+# 3. Mixed RW (Optional)
+if [ "$MODE_MIXED" = "1" ]; then
+    run_fio "mixed_rw" "rw" "--rwmixread=$RWMIXREAD"
 fi
 
-echo "=========================================="
-echo "Results Summary"
-echo "=========================================="
+# --- Results Summary ---
 
-echo ""
+log_header "Results Summary"
+
 echo "Sequential Write Bandwidth:"
-jq '.jobs[0].write | "  Throughput: \(.bw_mean/1024 | round) MB/s\n  IOPS: \(.iops_mean | round)\n  Latency: \(.lat_ns.mean/1000 | round) μs"' "$RESULTS_DIR/seq_write.json"
-
+parse_results "seq_write" "write"
 echo ""
+
 echo "Sequential Read Bandwidth:"
-jq '.jobs[0].read | "  Throughput: \(.bw_mean/1024 | round) MB/s\n  IOPS: \(.iops_mean | round)\n  Latency: \(.lat_ns.mean/1000 | round) μs"' "$RESULTS_DIR/seq_read.json"
+parse_results "seq_read" "read"
+echo ""
 
 if [ "$MODE_MIXED" = "1" ]; then
+    echo "Mixed RW Bandwidth ($RWMIXREAD% Read):"
+    parse_results "mixed_rw" "mixed"
     echo ""
-    echo "Mixed RW Bandwidth:"
-    # Mixed는 read+write 둘 다 표시
-    jq '.jobs[0] | "  READ  Throughput: \(.read.bw_mean/1024 | round) MB/s  IOPS: \(.read.iops_mean | round)\n  WRITE Throughput: \(.write.bw_mean/1024 | round) MB/s  IOPS: \(.write.iops_mean | round)"' \
-       "$RESULTS_DIR/mixed_rw.json"
 fi
 
-echo ""
-echo "=========================================="
-echo "Test completed! Full results in: $RESULTS_DIR"
-echo "=========================================="
+log_header "Test Completed Successfully"
+echo "Full JSON results available in: $RESULTS_DIR"
 
-# Cleanup (fs mode only)
+# --- Cleanup ---
 if [ "$MODE" = "fs" ]; then
-    rm -f "$TEST_FILE" 2>/dev/null || true
+    rm -rf "$TARGET_DIR" 2>/dev/null || true
 fi
+
