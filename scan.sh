@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # orchestrator_seqscan_move.sh
-# - fillrandom_1k_280GB_* DB들을 스캔 대상 목록으로 수집/선정 (이전 스크립트 로직 유지)
+# - 단일 DB 전용: DB_PATH=<absolute_db_path> 또는 첫 번째 인자로 DB 경로 전달
 # - 각 대상에 대해:
 #   (1) 전체 range 스캔: s3readseq,stats 실행
 #   (2) 사용한 디렉토리 이동: /home/smrc/TTLoad/scan/<DB_BASENAME> -> /home/smrc/TTLoad/S3-LOAD/readlogs
@@ -12,26 +12,21 @@
 set -euo pipefail
 
 # ===== 기본 설정(환경변수로 덮어쓰기) =====
-ITER="${ITER:-30}"                      # 이번에 돌릴 DB 개수
 CMD_PREFIX="${CMD_PREFIX:-}"            # 예: "numactl -N0 -m0 taskset -c 0-39"
 
 READ_DB_BENCH_BIN="${READ_DB_BENCH_BIN:-/home/smrc/TTLoad/S3-LOAD/db_bench}"
 OUT_ROOT="${OUT_ROOT:-/home/smrc/TTLoad/runs_seqscan}"   # 스캔 실행 로그 보관 위치
 
-DB_ROOT="${DB_ROOT:-/work/tmp/godong/diff_seed}"
-DB_NAME_PREFIX="${DB_NAME_PREFIX:-fillrandom_1k_280GB}"   # 280GB만 선택
+DB_PATH="${DB_PATH:-}"               # 필수. 예: /work/tmp/.../fillrandom_1k_280GB_...
 
 # s3readseq 고정 파라미터(요청 예시값 기반). 필요시 환경변수로 덮어쓰기 가능
-NUM="${NUM:-280000000}"
+NUM="${NUM:-700000000}"
 READS="${READS:-7000000}"
-THREADS="${THREADS:-40}"
+THREADS="${THREADS:-100}"
 KEY_SIZE="${KEY_SIZE:-24}"
 VALUE_SIZE="${VALUE_SIZE:-1000}"
-CACHE_SIZE_BYTES="${CACHE_SIZE_BYTES:-$((25*1024*1024*1024))}"  # 25GiB
+CACHE_SIZE_BYTES="${CACHE_SIZE_BYTES:-$((50*1024*1024*1024))}"  # 50GiB
 SEED="${SEED:-1724572420}"
-
-ORDER="${ORDER:-name}"                 # name | mtime | mtime_desc
-SHUFFLE="${SHUFFLE:-0}"                # 1 → 무작위
 
 # ===== 유틸 =====
 log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*"; }
@@ -83,51 +78,32 @@ $READ_DB_BENCH_BIN \
 CMD
 }
 
-collect_db_dirs() {
-  local -a arr=()
-  case "$ORDER" in
-    name)
-      while IFS= read -r -d '' d; do arr+=("$d"); done \
-        < <(find "$DB_ROOT" -maxdepth 1 -type d -name "${DB_NAME_PREFIX}_*" -print0 | sort -z)
-      ;;
-    mtime)
-      while IFS= read -r line; do arr+=("${line#* }"); done \
-        < <(find "$DB_ROOT" -maxdepth 1 -type d -name "${DB_NAME_PREFIX}_*" -printf '%T@ %p\n' | sort -n)
-      ;;
-    mtime_desc)
-      while IFS= read -r line; do arr+=("${line#* }"); done \
-        < <(find "$DB_ROOT" -maxdepth 1 -type d -name "${DB_NAME_PREFIX}_*" -printf '%T@ %p\n' | sort -nr)
-      ;;
-    *)
-      echo "[WARN] Unknown ORDER='$ORDER' → name 정렬 사용"
-      while IFS= read -r -d '' d; do arr+=("$d"); done \
-        < <(find "$DB_ROOT" -maxdepth 1 -type d -name "${DB_NAME_PREFIX}_*" -print0 | sort -z)
-      ;;
-  esac
-  if [[ "$SHUFFLE" == "1" && "${#arr[@]}" -gt 1 ]]; then
-    mapfile -t arr < <(printf '%s\n' "${arr[@]}" | shuf)
-  fi
-  printf '%s\n' "${arr[@]}"
-}
-
 # ===== 메인 =====
 trap 'echo; log "Interrupted"; exit 130' INT
 mkdir -p "$OUT_ROOT"
 
-log "SEQ-SCAN | 280GB 전용 | s3readseq 후 디렉토리 이동"
-log "DB_ROOT=$DB_ROOT / PREFIX=$DB_NAME_PREFIX"
-log "ITER=$ITER OUT_ROOT=$OUT_ROOT ORDER=$ORDER SHUFFLE=$SHUFFLE"
+log "SEQ-SCAN | single DB | s3readseq 후 디렉토리 이동"
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+  DB_PATH="$1"
+fi
+
+if [[ -z "$DB_PATH" ]]; then
+  echo "[ERROR] DB_PATH is required. Pass as env(DB_PATH=/path/to/db) or first arg." >&2
+  exit 2
+fi
+if [[ ! -d "$DB_PATH" ]]; then
+  echo "[ERROR] DB_PATH not found: $DB_PATH" >&2
+  exit 2
+fi
+
+log "DB_PATH=$DB_PATH"
+log "OUT_ROOT=$OUT_ROOT"
 log "READ_DB_BENCH_BIN=$READ_DB_BENCH_BIN"
 log "NUM=$NUM READS=$READS THREADS=$THREADS"
 log "CACHE_SIZE_BYTES=$CACHE_SIZE_BYTES CMD_PREFIX='${CMD_PREFIX}'"
 
-mapfile -t ALL_DB_DIRS < <(collect_db_dirs)
-if [[ "${#ALL_DB_DIRS[@]}" -eq 0 ]]; then
-  echo "[ERROR] 대상 DB 없음: ${DB_ROOT}/${DB_NAME_PREFIX}_*" >&2
-  exit 2
-fi
-SEL_DB_DIRS=("${ALL_DB_DIRS[@]:0:$ITER}")
-log "선택된 DB 개수: ${#SEL_DB_DIRS[@]} / 전체 후보: ${#ALL_DB_DIRS[@]}"
+SEL_DB_DIRS=("$DB_PATH")
+log "선택된 DB 개수: 1"
 
 SRC_BASE="/home/smrc/TTLoad/readlogs"
 DEST_BASE="/home/smrc/TTLoad/pscan"
@@ -162,4 +138,3 @@ for idx in "${!SEL_DB_DIRS[@]}"; do
 done
 
 log "All iterations done."
-

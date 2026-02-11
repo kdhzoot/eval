@@ -18,6 +18,8 @@ Optional Options:
   csv_dir=DIR                Directory for prediction CSVs (default: /home/smrc/TTLoad/ICL)
   perf=true|false            Enable perf profiling and flamegraph (default: false)
   tt_threads=NUM             Internal thread pool size for ttload (default: 48)
+  tt_ingest_batch=NUM        SST files per ingest batch for ttload (default: 16)
+  plot_tree=true|false       Extract sstables.log and plot LSM tree (default: false)
 
 Output directory is automatically generated as:
   runs/runs_<workload>_<size>_<timestamp>/
@@ -37,6 +39,8 @@ FILL_SEED_BASE="1722070161"
 CSV_ROOT="/home/smrc/TTLoad/ICL"
 USE_PERF="false"
 TT_THREADS="48"
+TT_INGEST_BATCH="16"
+PLOT_TREE="false"
 
 # Binary used from specified path
 DB_BENCH_BIN="/home/smrc/TTLoad/TTLoad/db_bench"
@@ -71,6 +75,12 @@ for arg in "$@"; do
     tt_threads=*)
       TT_THREADS="${arg#tt_threads=}"
       ;;
+    tt_ingest_batch=*)
+      TT_INGEST_BATCH="${arg#tt_ingest_batch=}"
+      ;;
+    plot_tree=*)
+      PLOT_TREE="${arg#plot_tree=}"
+      ;;
     -h|--help)
       usage
       ;;
@@ -89,6 +99,16 @@ MISSING_OPTS=""
 
 if [[ "$WORKLOAD" != "fillrandom" && "$WORKLOAD" != "fillseq" && "$WORKLOAD" != "ttload" ]]; then
   echo "Error: workload must be 'fillrandom', 'fillseq', or 'ttload'"
+  exit 1
+fi
+
+if [[ "$PLOT_TREE" != "true" && "$PLOT_TREE" != "false" ]]; then
+  echo "Error: plot_tree must be 'true' or 'false'"
+  exit 1
+fi
+
+if ! [[ "$TT_INGEST_BATCH" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: tt_ingest_batch must be a positive integer"
   exit 1
 fi
 
@@ -204,7 +224,7 @@ mk_fill_cmd() {
   local extra_params=""
   
   if [[ "$bench_type" == "ttload" ]]; then
-    extra_params="--threads=1 --tt_threads=$TT_THREADS --max_background_jobs=1 --disable_auto_compactions=1 --csv_path=${CSV_ROOT}/prediction_${size_tag}_gpt5.csv"
+    extra_params="--threads=1 --tt_threads=$TT_THREADS --tt_ingest_batch=$TT_INGEST_BATCH --max_background_jobs=1 --disable_auto_compactions=1 --csv_path=${CSV_ROOT}/prediction_${size_tag}_gpt5.csv"
   else
     extra_params="--threads=1 --max_background_jobs=64"
   fi
@@ -272,6 +292,9 @@ for size in $DB_SIZES; do
   # Wait for monitoring tools to stabilize
   sleep 0.2
   
+  log "Command to execute:"
+  printf '%s\n' "$cmd"
+
   start_sec=$(date +%s.%N)
   set +e
   
@@ -310,20 +333,22 @@ for size in $DB_SIZES; do
   # NEW: Run Python summary script for detailed analysis
   python3 "${SCRIPT_DIR}/script_ttload/ttload_summary.py" "$run_dir"
 
-  # Extract SSTable info and Plot Tree
-  log "Extracting SSTable information..."
-  $DB_BENCH_SSTABLES_BIN \
-    --benchmarks=sstables \
-    --use_existing_db=true \
-    --db="$DB_PATH" 2>&1 \
-    | sed -u -e 's/\r/\n/g' \
-             -e '/^[.][.][.] finished [0-9][0-9]* ops[[:space:]]*$/d' \
-             -e '/^[[:space:]]*$/d' > "$run_dir/sstables.log"
+  if [[ "$PLOT_TREE" == "true" ]]; then
+    # Extract SSTable info and Plot Tree
+    log "Extracting SSTable information..."
+    $DB_BENCH_SSTABLES_BIN \
+      --benchmarks=sstables \
+      --use_existing_db=true \
+      --db="$DB_PATH" 2>&1 \
+      | sed -u -e 's/\r/\n/g' \
+               -e '/^[.][.][.] finished [0-9][0-9]* ops[[:space:]]*$/d' \
+               -e '/^[[:space:]]*$/d' > "$run_dir/sstables.log"
 
-  log "Plotting LSM Tree structure..."
-  (
-    cd "$run_dir" && python3 "${SCRIPT_DIR}/script_plot/plot_tree.py" "sstables.log"
-  )
+    log "Plotting LSM Tree structure..."
+    (
+      cd "$run_dir" && python3 "${SCRIPT_DIR}/script_plot/plot_tree.py" "sstables.log"
+    )
+  fi
   
   log "✓ $size finished."
 done
