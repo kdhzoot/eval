@@ -35,8 +35,6 @@ plt.rcParams.update(
     }
 )
 
-# Default total key space (number of keys); can be overridden via CLI.
-DEFAULT_KEY_SPACE = 280_000_000
 SIZE_PATTERN = re.compile(r"_(\d+)(GB|TB)(?:_|$)", re.IGNORECASE)
 
 
@@ -93,12 +91,16 @@ def compute_level_stats(csv_path: Path, key_space: int) -> Tuple[Dict[int, float
     return coverage, counts
 
 
-def infer_key_space_from_label(label: str, default: int) -> int:
+def infer_key_space_from_label(label: str) -> int:
     """Infer key-space size from filename label (looks for _<size><GB|TB>_)."""
 
     match = SIZE_PATTERN.search(label)
     if not match:
-        return default
+        raise ValueError(
+            f"Failed to infer key space from '{label}'. "
+            "Expected filename to include '_<size>GB_' or '_<size>TB_'. "
+            "Or provide --key-space explicitly."
+        )
 
     value = int(match.group(1))
     unit = match.group(2).upper()
@@ -106,16 +108,19 @@ def infer_key_space_from_label(label: str, default: int) -> int:
         return value * 1_000_000
     if unit == "TB":
         return value * 1_000_000_000
-    return default
+    raise ValueError(
+        f"Unsupported size unit '{unit}' in '{label}'. "
+        "Supported units: GB, TB."
+    )
 
 
 def collect_coverages(
-    csv_files: List[Path], default_key_space: int
+    csv_files: List[Path], forced_key_space: int | None
 ) -> Dict[str, Tuple[Dict[int, float], Dict[int, int], int]]:
     data: Dict[str, Tuple[Dict[int, float], Dict[int, int], int]] = {}
     for csv_file in csv_files:
         label = csv_file.stem
-        key_space = infer_key_space_from_label(label, default_key_space)
+        key_space = forced_key_space if forced_key_space is not None else infer_key_space_from_label(label)
         coverage, counts = compute_level_stats(csv_file, key_space)
         data[label] = (coverage, counts, key_space)
     return data
@@ -346,8 +351,8 @@ def parse_args() -> argparse.Namespace:
         "csv_dir", help="Directory containing SSTable CSV files."
     )
     parser.add_argument(
-        "--key-space", type=int, default=DEFAULT_KEY_SPACE,
-        help=f"Total key space size (default: {DEFAULT_KEY_SPACE:,})."
+        "--key-space", type=int, default=None,
+        help="Total key space size override. If omitted, inferred from each filename (_<size>GB_/_<size>TB_)."
     )
     parser.add_argument(
         "--pattern", default="sstables_*.csv",
@@ -383,7 +388,11 @@ def main() -> int:
         print(f"[ERROR] No CSV files matched pattern '{args.pattern}' in {csv_dir}")
         return 1
 
-    data = collect_coverages(csv_files, args.key_space)
+    try:
+        data = collect_coverages(csv_files, args.key_space)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        return 1
     # Output paths follow the script location or current directory depending on preference,
     # but let's keep it near the script or in current dir?
     # Original code: base_dir = Path(__file__).resolve().parent; output_path = base_dir / args.output

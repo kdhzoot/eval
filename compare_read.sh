@@ -27,7 +27,7 @@ EOF
 TTLOAD_DB=""
 FILLRANDOM_DB=""
 WORKLOAD="readrandom"
-READS="10000"
+READS="100000"
 CACHE_SIZES="1"
 OUT_ROOT=""
 DB_BENCH_BIN="/home/smrc/TTLoad/rocksdb_perf/db_bench"

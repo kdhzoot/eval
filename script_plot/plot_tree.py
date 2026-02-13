@@ -140,9 +140,9 @@ def plot_key_span_broken_barh(groups, output_file: str):
     """
     broken_barh를 사용하여 각 SST의 (min_key, max_key) 범위를
     레벨별로 색상 블록으로 시각화.
-    x축은 보기용으로 0~10000 범위로 정규화하여 표시.
+    x축은 전체 key-space 대비 상대 비율(0~100%)로 표시.
     """
-    # 전체 키 범위 계산 (정규화용)
+    # 전체 키 범위 계산
     global_min = None
     global_max = None
     for entries in groups.values():
@@ -156,13 +156,12 @@ def plot_key_span_broken_barh(groups, output_file: str):
                     global_max = max_key
 
     if global_min is None or global_max is None or global_max <= global_min:
-        key_range = 1.0
         global_min = 0
-    else:
-        key_range = float(global_max - global_min)
+        global_max = 1
+    key_range = float(global_max - global_min)
 
-    def norm(x):
-        return 10000.0 * (x - global_min) / key_range
+    def to_pct(x):
+        return 100.0 * (x - global_min) / key_range
 
     plt.figure(figsize=(16, 6))
     height = 0.5  # 각 bar 높이 (한 눈에 보이도록 키움)
@@ -183,25 +182,28 @@ def plot_key_span_broken_barh(groups, output_file: str):
                 if key_span <= 0:
                     continue  # 무효한 구간
 
-                x_norm = norm(min_key)
-                span_norm = norm(max_key) - x_norm
-                if span_norm <= 0:
+                x_pct = to_pct(min_key)
+                span_pct = to_pct(max_key) - x_pct
+                if span_pct <= 0:
                     continue
                 plt.broken_barh(
-                    [(x_norm, span_norm)],
+                    [(x_pct, span_pct)],
                     (level - height / 2, height),
                     facecolors='steelblue',
                     edgecolors='#3d3b3b',
                     alpha=0.9
                 )
 
-    plt.xlabel("Key space", labelpad=20)
+    plt.xlabel("Key space coverage (%)", labelpad=20)
     plt.ylabel("Level", labelpad=20)
-    plt.title("Key Range Covered by SST", pad=25)
+    plt.title(
+        f"Key Range Covered by SST\n(global range: {global_min:,} .. {global_max:,})",
+        pad=25,
+    )
 
     plt.grid(True, axis='x', linestyle='--', alpha=0.5)
-    plt.xlim(0, 10000)
-    plt.xticks([0, 2000, 4000, 6000, 8000, 10000])
+    plt.xlim(0.0, 100.0)
+    plt.xticks([0, 20, 40, 60, 80, 100])
     plt.yticks(sorted([int(k) for k in groups.keys() if groups[k]]))
     plt.tight_layout()
     plt.gca().invert_yaxis()
@@ -249,5 +251,3 @@ if __name__ == "__main__":
 
     plot_key_span_broken_barh(grouped_entries, output_png)
     print(f"Saved: {output_png}")
-
-

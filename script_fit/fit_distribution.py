@@ -52,6 +52,46 @@ def ensure_positive(x: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     x = x[x >= 0]
     return np.maximum(x, eps)
 
+def trim_both_tails_percent(
+    x: np.ndarray, tail_pct: float = 0.01
+) -> Tuple[np.ndarray, float, float, int]:
+    """Trim both tails by percentile (e.g., tail_pct=0.01 -> keep p01 <= x <= p99)."""
+    x = np.asarray(x, dtype=float)
+    if x.size == 0:
+        return x, np.nan, np.nan, 0
+    if tail_pct <= 0.0:
+        return x, np.nan, np.nan, 0
+
+    q_low = float(np.quantile(x, tail_pct))
+    q_high = float(np.quantile(x, 1.0 - tail_pct))
+    mask = (x >= q_low) & (x <= q_high)
+    trimmed = x[mask]
+    removed = int(x.size - trimmed.size)
+    return trimmed, q_low, q_high, removed
+
+
+def trim_upper_iqr(
+    x: np.ndarray, iqr_mult: float = 1.5
+) -> Tuple[np.ndarray, float, float, float, float, int]:
+    """Auto-trim upper-tail outliers with Tukey fence: Q3 + k*IQR."""
+    x = np.asarray(x, dtype=float)
+    if x.size == 0:
+        return x, np.nan, np.nan, np.nan, np.nan, 0
+    if x.size < 4:
+        return x, np.nan, np.nan, np.nan, np.nan, 0
+
+    q1 = float(np.quantile(x, 0.25))
+    q3 = float(np.quantile(x, 0.75))
+    iqr = q3 - q1
+    if iqr <= 0:
+        return x, q1, q3, iqr, np.nan, 0
+
+    upper = q3 + iqr_mult * iqr
+    trimmed = x[x <= upper]
+    removed = int(x.size - trimmed.size)
+    return trimmed, q1, q3, iqr, upper, removed
+
+
 def calculate_fitting_score(data: np.ndarray, dist_name: str, params: tuple) -> float:
     """
     [핵심 기능] 모델 적합도 점수 계산 (R-squared of CDF)
@@ -187,53 +227,71 @@ def build_samples_from_dir(input_dir: str, pattern: str, target_mode: str) -> pd
 # 3. 모델 피팅 및 점수 계산 (Fitting Engine)
 # -----------------------------------------------------------------------------
 
-def fit_best_distribution_mle(x: np.ndarray, top_k: int = 1) -> List[Dict[str, Any]]:
+def fit_best_distribution_mle(
+    x: np.ndarray, top_k: int = 1, allow_free_loc: bool = True
+) -> List[Dict[str, Any]]:
     x_safe = ensure_positive(x)
-    if len(x_safe) < 20: return [] # 데이터가 너무 적으면 스킵
+    n = len(x_safe)
+    if n < 20:
+        return []
 
     candidate_dists = [
-        "beta",
-        "expon",        # 지수 분포
-        "lognorm",      # 로그 정규 분포
-        "skewnorm",     
-        "gamma",        # 감마 분포
-        "weibull_min",  # 와이블 분포
-        "weibull_max",
-        "pareto",       # 파레토 분포
-        "fisk",         # 로그-로지스틱 분포
-        "uniform"       # 균등 분포
-    ]    
+        # "beta",
+        "expon",
+        # "lognorm",
+        # "skewnorm",
+        # "gamma",
+        # "weibull_min",
+        # "weibull_max",
+        # "pareto",
+        # "fisk",
+        # "uniform"
+    ]
+
     results = []
-    
+
     for dist_name in candidate_dists:
         try:
             dist = getattr(st, dist_name)
-            
-            # 1. Fit (MLE: 최대우도추정)
-            params = dist.fit(x_safe, floc=0)
-            
-            # 2. BIC 계산 (모델 선택 기준)
-            log_lik = np.sum(dist.logpdf(x_safe, *params))
-            if not np.isfinite(log_lik): continue
-            bic =  - 2 * log_lik
 
-            # 3. K-S Test (참고용 통계)
+            # 1️⃣ loc 추정 정책:
+            # - KD: loc 자유추정
+            # - Gap/Entry: loc=0 고정
+            if allow_free_loc:
+                params = dist.fit(x_safe)
+            else:
+                params = dist.fit(x_safe, floc=0)
+
+            # 2️⃣ log-likelihood 계산
+            log_lik = np.sum(dist.logpdf(x_safe, *params))
+            if not np.isfinite(log_lik):
+                continue
+
+            # 3️⃣ 정식 BIC 계산
+            k = len(params)  # 추정된 파라미터 개수
+            # bic = -2 * log_lik + k * np.log(n)
+            bic = -2 * log_lik
+
+            # 4️⃣ K-S Test
             D_stat, p_value = kstest(x_safe, dist_name, args=params)
-            
-            # 4. Score 계산 (0~100점) - 직관적 지표
+
+            # 5️⃣ CDF 기반 R² score
             score = calculate_fitting_score(x_safe, dist_name, params)
 
             results.append({
-                "dist": dist_name, 
-                "bic": bic, 
+                "dist": dist_name,
+                "bic": bic,
                 "params": params,
                 "ks_stat": D_stat,
                 "ks_p": p_value,
-                "score": score
+                "score": score,
+                "num_params": k
             })
-        except: continue
 
-    # BIC가 낮은 순서대로 정렬 (가장 적합한 모델이 0번 인덱스)
+        except Exception:
+            continue
+
+    # BIC 기준 정렬 (낮을수록 좋음)
     results.sort(key=lambda r: r["bic"])
     return results[:top_k]
 
@@ -286,9 +344,37 @@ def run_analysis(df: pd.DataFrame, target_mode: str, top_k: int = 3) -> pd.DataF
         else:
             x_to_fit = x_all
 
+        # KD only: trim lower/upper 1% outliers before fitting
+        if target_mode == "kd":
+            x_to_fit, kd_trim_p01, kd_trim_p99, kd_trim_removed = trim_both_tails_percent(
+                x_to_fit, tail_pct=0.01
+            )
+            row["kd_trim_tail_pct"] = 0.01
+            row["kd_trim_p01"] = round(float(kd_trim_p01), 6) if np.isfinite(kd_trim_p01) else np.nan
+            row["kd_trim_p99"] = round(float(kd_trim_p99), 6) if np.isfinite(kd_trim_p99) else np.nan
+            row["kd_trim_removed"] = int(kd_trim_removed)
+            row["kd_trimmed_count"] = int(len(x_to_fit))
+        
+        # GAP only: auto-trim upper-tail outliers before fitting (Q3 + 1.5*IQR)
+        if target_mode == "gap":
+            x_to_fit, gap_trim_q1, gap_trim_q3, gap_trim_iqr, gap_trim_upper, gap_trim_removed = trim_upper_iqr(
+                x_to_fit, iqr_mult=1.5
+            )
+            row["gap_trim_iqr_mult"] = 1.5
+            row["gap_trim_q1"] = round(float(gap_trim_q1), 6) if np.isfinite(gap_trim_q1) else np.nan
+            row["gap_trim_q3"] = round(float(gap_trim_q3), 6) if np.isfinite(gap_trim_q3) else np.nan
+            row["gap_trim_iqr"] = round(float(gap_trim_iqr), 6) if np.isfinite(gap_trim_iqr) else np.nan
+            row["gap_trim_upper"] = round(float(gap_trim_upper), 6) if np.isfinite(gap_trim_upper) else np.nan
+            row["gap_trim_removed"] = int(gap_trim_removed)
+            row["gap_trimmed_count"] = int(len(x_to_fit))
+
         # 피팅 수행
         if len(x_to_fit) >= 20:
-            mle_results = fit_best_distribution_mle(x_to_fit, top_k=top_k)
+            mle_results = fit_best_distribution_mle(
+                x_to_fit,
+                top_k=top_k,
+                allow_free_loc=(target_mode == "kd" or target_mode == "gap"),
+            )
             for i, res in enumerate(mle_results):
                 prefix = f"top_{i+1}"
                 row[prefix] = res["dist"]

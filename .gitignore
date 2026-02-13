@@ -8,3 +8,5 @@ results_*
 *.png
 figures/
 __pycache__/
+readlogs
+read_logs

@@ -31,12 +31,25 @@ import pandas as pd
 import scipy.stats as st
 
 
+SIZE_PATTERN = re.compile(r"_(\d+)(GB|TB)(?:_|$)", re.IGNORECASE)
+
+
 def q1_q2_q3(values: np.ndarray) -> Tuple[float, float, float]:
     """Return (Q1, Q2/median, Q3) for a numeric array; NaN if empty."""
     if values.size == 0:
         return (np.nan, np.nan, np.nan)
     q = np.nanquantile(values.astype(float), [0.25, 0.50, 0.75])
     return (float(q[0]), float(q[1]), float(q[2]))
+
+
+def clip_lower_tail(values: np.ndarray, tail_pct: float = 0.01) -> np.ndarray:
+    """Clip only lower tail by percentile (e.g., 1% -> clip values below p01 up to p01)."""
+    x = np.asarray(values, dtype=float)
+    x = x[~np.isnan(x)]
+    if x.size == 0 or tail_pct <= 0.0:
+        return x
+    low = float(np.nanquantile(x, tail_pct))
+    return np.maximum(x, low)
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +93,38 @@ def extract_db_size(run_id: str) -> str:
     return m.group(1).upper() if m else "unknown"
 
 
+def infer_key_space_from_run_id(run_id: str) -> float:
+    """Infer key-space from run_id using _<size>GB_ or _<size>TB_."""
+    m = SIZE_PATTERN.search(run_id)
+    if not m:
+        return np.nan
+
+    size = int(m.group(1))
+    unit = m.group(2).upper()
+    if unit == "GB":
+        return float(size * 1_000_000)
+    if unit == "TB":
+        return float(size * 1_000_000_000)
+    return np.nan
+
+
+def merge_ranges(ranges: List[Tuple[int, int]]) -> int:
+    """Merge inclusive ranges and return total covered key count."""
+    if not ranges:
+        return 0
+    sorted_ranges = sorted(ranges, key=lambda x: x[0])
+    merged: List[Tuple[int, int]] = []
+    cur_start, cur_end = sorted_ranges[0]
+    for start, end in sorted_ranges[1:]:
+        if start <= cur_end + 1:
+            cur_end = max(cur_end, end)
+        else:
+            merged.append((cur_start, cur_end))
+            cur_start, cur_end = start, end
+    merged.append((cur_start, cur_end))
+    return int(sum(end - start + 1 for start, end in merged))
+
+
 def compute_key_density(df: pd.DataFrame) -> pd.Series:
     """Compute per-row key density = (max_key - min_key + 1) / entry_n when valid, else NaN."""
     min_k = pd.to_numeric(df["min_key"], errors="coerce")
@@ -121,7 +166,7 @@ def fit_pareto_params(gaps: np.ndarray) -> Tuple[float, float, float]:
     if x_safe.size < 20:  # Require minimum samples for a sensible fit
         return (np.nan, np.nan, np.nan)
     try:
-        # floc=0 anchors the distribution at zero
+        # Keep location fixed at zero
         params = st.pareto.fit(x_safe, floc=0)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
@@ -135,8 +180,8 @@ def fit_fisk_params(values: np.ndarray) -> Tuple[float, float, float]:
     if x_safe.size < 20:
         return (np.nan, np.nan, np.nan)
     try:
-        # floc=0 anchors the distribution at zero
-        params = st.fisk.fit(x_safe, floc=0)
+        # Estimate c, loc, scale freely for KD Fisk fitting
+        params = st.fisk.fit(x_safe)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
         return (np.nan, np.nan, np.nan)
@@ -160,7 +205,7 @@ def fit_lognormal_params(values: np.ndarray) -> Tuple[float, float, float]:
     if x_safe.size < 20:
         return (np.nan, np.nan, np.nan)
     try:
-        # floc=0 anchors distribution at zero
+        # Keep location fixed at zero
         params = st.lognorm.fit(x_safe, floc=0)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
@@ -173,7 +218,7 @@ def fit_weibull_params(values: np.ndarray) -> Tuple[float, float, float]:
     if x_safe.size < 20:
         return (np.nan, np.nan, np.nan)
     try:
-        # floc=0 anchors the distribution at zero
+        # Keep location fixed at zero
         params = st.weibull_min.fit(x_safe, floc=0)
         return (float(params[0]), float(params[1]), float(params[2]))
     except:
@@ -226,7 +271,9 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
     df["key_density"] = compute_key_density(df)
 
     # Per-level aggregates
-    res: Dict[str, Any] = {"run_id": infer_run_id(csv_path)}
+    run_id = infer_run_id(csv_path)
+    res: Dict[str, Any] = {"run_id": run_id}
+    key_space = infer_key_space_from_run_id(run_id)
     levels_present = set(df["level"].unique().tolist())
     res["n_levels"] = len(levels_present)
 
@@ -241,12 +288,29 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         # min/max key across this level
         level_min_key = pd.to_numeric(sub["min_key"], errors="coerce").min()
         level_max_key = pd.to_numeric(sub["max_key"], errors="coerce").max()
+        
+        # level key-space coverage (%): merged inclusive range length / key_space
+        ranges_df = sub[["min_key", "max_key"]].copy()
+        ranges_df["min_key"] = pd.to_numeric(ranges_df["min_key"], errors="coerce")
+        ranges_df["max_key"] = pd.to_numeric(ranges_df["max_key"], errors="coerce")
+        ranges_df = ranges_df.dropna(subset=["min_key", "max_key"])
+        ranges_df = ranges_df[ranges_df["max_key"] >= ranges_df["min_key"]]
+        ranges: List[Tuple[int, int]] = [
+            (int(x[0]), int(x[1])) for x in ranges_df.to_numpy()
+        ]
+        covered_keys = merge_ranges(ranges)
+        coverage_pct = (
+            (covered_keys / key_space) * 100.0 if pd.notna(key_space) and key_space > 0 else np.nan
+        )
 
         # key density stats (population std: ddof=0)
         kd = pd.to_numeric(sub["key_density"], errors="coerce")
-        kd_mean = float(np.nanmean(kd)) if kd.notna().any() else np.nan
-        kd_std = float(np.nanstd(kd)) if kd.notna().any() else np.nan
-        kd_vals = kd.dropna().to_numpy(dtype=float)
+        kd_vals_raw = kd.dropna().to_numpy(dtype=float)
+        # KD only: 1% lower-tail clipping before stats/fitting
+        kd_tail_pct = 0.01
+        kd_vals = clip_lower_tail(kd_vals_raw, tail_pct=kd_tail_pct)
+        kd_mean = float(np.nanmean(kd_vals)) if kd_vals.size > 0 else np.nan
+        kd_std = float(np.nanstd(kd_vals)) if kd_vals.size > 0 else np.nan
         kd_min = float(np.nanmin(kd_vals)) if kd_vals.size > 0 else np.nan
         kd_max = float(np.nanmax(kd_vals)) if kd_vals.size > 0 else np.nan
         kd_q1, kd_q2, kd_q3 = q1_q2_q3(kd_vals)
@@ -306,6 +370,7 @@ def summarize_one(csv_path: str) -> Tuple[Dict[str, Any], Set[int]]:
         res[f"{prefix}_count"] = count
         res[f"{prefix}_min_key"] = level_min_key if pd.notna(level_min_key) else np.nan
         res[f"{prefix}_max_key"] = level_max_key if pd.notna(level_max_key) else np.nan
+        res[f"{prefix}_coverage_pct"] = coverage_pct
         res[f"{prefix}_kd_mean"] = kd_mean
         res[f"{prefix}_kd_std"] = kd_std
         res[f"{prefix}_kd_min"] = kd_min
@@ -365,6 +430,7 @@ def main() -> None:
         "count",
         "min_key",
         "max_key",
+        "coverage_pct",
         "kd_mean",
         "kd_std",
         "kd_min",
